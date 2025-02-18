@@ -1,3 +1,4 @@
+
 import re
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
@@ -7,9 +8,9 @@ from google.cloud import storage
 
 # Set a similarity threshold.
 # Here, higher scores mean more similar (with 1 being identical).
-SIMILARITY_THRESHOLD = 0.7
+SIMILARITY_THRESHOLD = 0.9
 
-# Helper: Get existing chunk IDs from Cloud Storage
+# Helper: Get existing chunk IDs from Cloud Storage for a given video_id
 def get_existing_chunk_ids(video_id, bucket_name):
     client = storage.Client()
     bucket = client.bucket(bucket_name)
@@ -25,10 +26,14 @@ def get_existing_chunk_ids(video_id, bucket_name):
             continue
     return ids
 
-# Step 1: Fetch YouTube Transcript
+# Step 1: Fetch YouTube Transcript for a given video URL
 def fetch_youtube_transcript(video_url):
     video_id = video_url.split("v=")[-1]
-    transcript = YouTubeTranscriptApi.get_transcript(video_id)
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+    except Exception as e:
+        print(f"Could not retrieve transcript for video {video_url}. Skipping. Error: {e}")
+        return None
     formatter = TextFormatter()
     plain_text = formatter.format_transcript(transcript)
     return plain_text
@@ -39,7 +44,7 @@ def preprocess_text(text):
     text = re.sub(r'(?<=\w)\n(?=\w)', ' ', text)
     return text
 
-# Step 3: Create Semantic Chunks
+# Step 3: Create Semantic Chunks from text
 def create_semantic_chunks(text, chunk_size=350, chunk_overlap=50):
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -49,27 +54,27 @@ def create_semantic_chunks(text, chunk_size=350, chunk_overlap=50):
     chunks = text_splitter.split_text(text)
     return chunks
 
-# Step 4: Store Chunks in the Vector Store with Duplicate Check, Extended Metadata, and Auto-incremented IDs
+# Step 4: Store Chunks in the Vector Store with Duplicate Check, Extended Metadata, and Auto-Incremented IDs
 def store_embeddings_in_vector_store(chunks, video_url):
     # Define Vertex AI and vector store parameters
-    PROJECT_ID = "lang-client-543"
+    PROJECT_ID = "sample-client-5464560543"
     REGION = "us-central1"
-    INDEX_ID = "456........336576848"
-    ENDPOINT_ID = "5........6354608"
+    INDEX_ID = "---------5356757312"
+    ENDPOINT_ID = "------10756756736"
     EMBEDDING_MODEL = "text-embedding-005"
-    BUCKET = "rag_buck_001"
+    BUCKET = "sample_rag_bucket_001"
 
     # Extract video_id from the URL
     video_id = video_url.split("v=")[-1]
 
-    # Get existing chunk IDs from the Cloud Storage bucket
+    # Get existing chunk IDs from the Cloud Storage bucket for this video_id
     existing_ids = get_existing_chunk_ids(video_id, BUCKET)
     if existing_ids:
         next_index = max(existing_ids) + 1
     else:
         next_index = 0
 
-    # Create embeddings instance and rebuild model if necessary
+    # Create embeddings instance and rebuild if necessary
     embedding_model = VertexAIEmbeddings(model=EMBEDDING_MODEL)
     embedding_model.model_rebuild()
 
@@ -95,13 +100,19 @@ def store_embeddings_in_vector_store(chunks, video_url):
 
         # Use similarity search by vector with score.
         results = vector_store.similarity_search_by_vector_with_score(new_embedding, k=1)
+        metadata = {
+            "text": chunk,
+            "chunk_text": chunk,
+            "chunk_index": i,
+            "source_link": video_url
+        }
+        print(f"\nChunk {i} metadata:")
+        print(metadata)
+
         if results:
             existing_doc, score = results[0]
-            print(f"\nChunk {i} check:")
             print(f"Similarity score (cosine similarity): {score:.3f}")
             if score > SIMILARITY_THRESHOLD:
-                print("New chunk:")
-                print(chunk)
                 print("Existing similar chunk found:")
                 print(existing_doc.page_content)
                 print("=> This chunk will be SKIPPED.\n")
@@ -110,19 +121,14 @@ def store_embeddings_in_vector_store(chunks, video_url):
             else:
                 print("No sufficiently similar chunk found; this chunk will be inserted.\n")
         else:
-            print(f"\nChunk {i}: No similar documents returned. Inserting new chunk.\n")
+            print("No similar documents returned. Inserting new chunk.\n")
 
         # Assign a new unique id based on video_id and next_index.
         new_id = f"{video_id}_chunk_{next_index}"
         next_index += 1
 
         new_texts.append(chunk)
-        new_metadatas.append({
-            "text": chunk,           # Original chunk text
-            "chunk_text": chunk,     # Redundant copy for explicit labeling
-            "chunk_index": i,
-            "source_link": video_url # Source link of the file
-        })
+        new_metadatas.append(metadata)
         new_ids.append(new_id)
 
     if new_texts:
@@ -131,11 +137,16 @@ def store_embeddings_in_vector_store(chunks, video_url):
     else:
         print("\nNo new datapoints to insert; all chunks appear to be duplicates.")
 
-# Main execution function
-def main():
-    video_url = "https://www.youtube.com/watch?v=aa528jbZDeI"  # Update with your desired video URL
+# Process a single video URL through the full pipeline
+def process_video(video_url):
+    print(f"\n=== Processing video: {video_url} ===")
     print("Fetching transcript...")
     transcript = fetch_youtube_transcript(video_url)
+    
+    # If no transcript is found, skip further processing for this video.
+    if transcript is None:
+        print(f"Skipping video {video_url} due to missing transcript.\n")
+        return
 
     print("Preprocessing transcript...")
     processed_text = preprocess_text(transcript)
@@ -146,7 +157,14 @@ def main():
 
     print("Storing embeddings in the vector store with duplicate check and enhanced metadata...")
     store_embeddings_in_vector_store(chunks, video_url)
+    print(f"=== Finished processing video: {video_url} ===\n")
 
+# Main execution function for multiple video links
+def main():
+    video_urls = ["https://www.youtube.com/watch?v=aa528jbZDeI","https://www.youtube.com/watch?v=n2LEZcyBlkA","https://www.youtube.com/watch?v=cm8ax_ejv5o"]
+    for url in video_urls:
+        process_video(url)
 
 if __name__ == "__main__":
     main()
+
